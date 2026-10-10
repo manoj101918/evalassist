@@ -1,0 +1,38 @@
+[project]
+name = "evalassist-backend"
+version = "0.1.0"
+description = "EvalAssist: AI-assisted evaluation of handwritten answer scripts"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "groq>=1.0",
+    "supabase>=2.10",
+    "pydantic[email]>=2.8",
+    "pydantic-settings>=2.4",
+    "pymupdf>=1.26",
+    "openpyxl>=3.1",
+    "pyjwt[crypto]>=2.9",
+    "rapidfuzz>=3.9",
+    "azure-ai-documentintelligence>=1.0",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["app*", "evals*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]  # long strings in prompts; FastAPI's Depends() in defaults

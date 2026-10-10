@@ -1,0 +1,24 @@
+{
+  "questions": [
+    {
+      "label": "1",
+      "text": "Define a stack and state its two primary operations.",
+      "max_marks": 4,
+      "model_answer": "A stack is a linear data structure that follows Last In First Out (LIFO) order. Its primary operations are push (insert an element on top) and pop (remove the top element).",
+      "rubric": [
+        {"description": "Defines a stack as a linear data structure following LIFO order", "marks": 2},
+        {"description": "Names and explains push", "marks": 1},
+        {"description": "Names and explains pop", "marks": 1}
+      ]
+    },
+    {
+      "label": "2",
+      "text": "Explain one real-world application of a queue.",
+      "max_marks": 3,
+      "rubric": [
+        {"description": "Names a valid application (e.g. printer spooling, CPU scheduling, ticket counter)", "marks": 1},
+        {"description": "Explains why FIFO order suits that application", "marks": 2}
+      ]
+    }
+  ]
+}
