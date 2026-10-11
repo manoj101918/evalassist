@@ -44,3 +44,15 @@ def ink_ratio(png: bytes) -> float:
 
 def is_blank(png: bytes) -> bool:
     return ink_ratio(png) < BLANK_INK_RATIO
+
+
+def crop_png(png: bytes, region: tuple[float, float, float, float]) -> bytes:
+    """Crop a rendered page to `region` (x0, y0, x1, y1 as 0–1 shares of width and height)."""
+    pix = pymupdf.Pixmap(png)
+    w, h = pix.width, pix.height
+    x0, y0, x1, y1 = region
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=w, height=h)
+        page.insert_image(page.rect, stream=png)
+        clip = pymupdf.Rect(x0 * w, y0 * h, x1 * w, y1 * h)
+        return page.get_pixmap(clip=clip, dpi=72, colorspace=pymupdf.csGRAY).tobytes("png")

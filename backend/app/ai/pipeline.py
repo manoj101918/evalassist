@@ -12,8 +12,9 @@ from app.ai import prompts
 from app.ai.client import AIError, Grader, QuotaExhausted, image_block, text_block
 from app.ai.confidence import ConfidenceInput, decide, worst_legibility
 from app.ai.evidence import missing_evidence
+from app.ai.mcq_grid import GridCell, read_mcq_grid
 from app.ai.ocr_azure import MODEL_NAME as AZURE_MODEL_NAME
-from app.ai.rules import grade_mcq
+from app.ai.rules import grade_mcq, parse_options
 from app.ai.schemas import (
     AnswerResult,
     Grading,
@@ -24,7 +25,7 @@ from app.ai.schemas import (
     SegmentedAnswer,
 )
 from app.config import AZURE_READ_PRICE_PER_PAGE
-from app.pdf import is_blank
+from app.pdf import crop_png, is_blank
 
 log = logging.getLogger(__name__)
 
@@ -174,8 +175,59 @@ def merge_segments(segmentation: Segmentation,
     return merged
 
 
+async def reread_mcq_cell(grader: Grader, png: bytes, cell: GridCell, valid: set[str]) -> None:
+    """Read one MCQ cell OCR left empty by showing the vision model just that crop."""
+    reply = await grader.text(
+        step="reread",
+        model=grader.vision_model,
+        system=prompts.REREAD_OPTION_SYSTEM,
+        content=[image_block(crop_png(png, cell.region)),
+                 text_block(f"Question {cell.label}: which option letter is written here?")],
+        effort="none",
+        max_tokens=20,
+    )
+    m = re.search(r"\b([A-E])\b", reply.upper())
+    if m and m.group(1) in valid:
+        cell.letter, cell.how = m.group(1), "reread"
+
+
+async def read_mcq_answers(grader: Grader, pages: list[PageTranscript], questions: list[QuestionSpec],
+                           page_images: list[bytes] | None) -> dict[str, GridCell]:
+    """MCQ answers from the word positions of grid-like pages; empty cells are re-read from the
+    page image when images are available. Keyed by question label."""
+    mcqs = [q for q in questions if q.is_mcq]
+    if not mcqs:
+        return {}
+    valid = set().union(*(parse_options(q.text) for q in mcqs)) or set("ABCDE")
+    cells = read_mcq_grid(pages, {normalise_label(q.label) for q in mcqs}, valid)
+    missing = [c for c in cells.values() if c.letter is None]
+    if page_images and missing:
+        results = await asyncio.gather(
+            *(reread_mcq_cell(grader, page_images[c.page_no - 1], c, valid) for c in missing),
+            return_exceptions=True)
+        for c, r in zip(missing, results, strict=True):
+            # A re-read is a bonus: if it fails (even on a used-up quota) the cell stays empty
+            # and the teacher sees it, rather than the whole booklet failing.
+            if isinstance(r, Exception):
+                log.warning("re-reading MCQ %s failed: %s", c.label, r)
+    return cells
+
+
+def grid_check_reason(cell: GridCell) -> str | None:
+    if cell.how == "reread":
+        return "The letter was re-read from the page image by the AI: please confirm it in the booklet."
+    if cell.how == "inferred":
+        return (f"The question number was not readable; its position on the page suggests "
+                f"Q{cell.label}: please confirm in the booklet.")
+    if cell.how.startswith("look-alike:"):
+        return f"Read as '{cell.how.split(':', 1)[1]}', taken as {cell.letter}: please confirm in the booklet."
+    if cell.needs_check:
+        return f"The letter was read with low confidence ({cell.confidence:.2f}): please confirm."
+    return None
+
+
 async def evaluate_answer(grader: Grader, q: QuestionSpec, seg: SegmentedAnswer | None,
-                          pages: list[PageTranscript]) -> AnswerResult:
+                          pages: list[PageTranscript], grid_cell: GridCell | None = None) -> AnswerResult:
     if seg is None or not seg.text.strip():
         legibility = worst_legibility([p.legibility for p in pages])
         colour, reasons = decide(ConfidenceInput(
@@ -192,6 +244,10 @@ async def evaluate_answer(grader: Grader, q: QuestionSpec, seg: SegmentedAnswer 
     if q.is_mcq:
         # Tier 1: exact rule, no AI call.
         rule = grade_mcq(q, seg.text, worst_legibility([p.legibility for p in answer_pages]))
+        if grid_cell is not None and (reason := grid_check_reason(grid_cell)):
+            rule.confidence_reasons.append(reason)
+            if rule.confidence == "green":
+                rule.confidence = "yellow"
         return AnswerResult(
             question_id=q.id, page_numbers=valid_pages, transcription=seg.text,
             ai_marks=rule.marks, ai_breakdown=rule.breakdown, ai_reason=rule.reason,
@@ -244,16 +300,29 @@ async def transcribe_pages(grader: Grader, page_images: list[bytes]) -> list[Pag
 
 async def grade_script(grader: Grader, page_images: list[bytes],
                        questions: list[QuestionSpec]) -> ScriptResult:
-    return await grade_pages(grader, await transcribe_pages(grader, page_images), questions)
+    pages = await transcribe_pages(grader, page_images)
+    return await grade_pages(grader, pages, questions, page_images)
 
 
-async def grade_pages(grader: Grader, pages: list[PageTranscript],
-                      questions: list[QuestionSpec]) -> ScriptResult:
+async def grade_pages(grader: Grader, pages: list[PageTranscript], questions: list[QuestionSpec],
+                      page_images: list[bytes] | None = None) -> ScriptResult:
     """Everything after reading: split into answers, grade, decide colours. Evals call this
-    directly with cached transcriptions, so re-running an evaluation costs no vision calls."""
-    segmentation = await segment(grader, pages, questions)
+    directly with cached transcriptions, so re-running an evaluation costs no page reads.
+    `page_images` (optional) lets empty MCQ cells be re-read from the page."""
+    segmentation, grid = await asyncio.gather(
+        segment(grader, pages, questions),
+        read_mcq_answers(grader, pages, questions, page_images),
+    )
     segments = merge_segments(segmentation, questions)
+    cells: dict[str, GridCell] = {}
+    for q in questions:
+        cell = grid.get(normalise_label(q.label)) if q.is_mcq else None
+        if cell is not None and cell.letter:
+            # Position-based reading beats the text split for answers written as a grid.
+            cells[q.id] = cell
+            segments[q.id] = SegmentedAnswer(question_label=q.label, pages=[cell.page_no],
+                                             text=cell.letter, ambiguous=False, note="")
     answers = await asyncio.gather(
-        *(evaluate_answer(grader, q, segments.get(q.id), pages) for q in questions)
+        *(evaluate_answer(grader, q, segments.get(q.id), pages, cells.get(q.id)) for q in questions)
     )
     return ScriptResult(pages=pages, answers=list(answers))

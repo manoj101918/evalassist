@@ -44,10 +44,12 @@ are exported to **Excel**.
 | **5. Phase 0: foundations** | Code quality checker (ruff), Docker, automatic tests on GitHub (CI), evaluation harness, MCQ rules tier, **Azure page reading** | About **30 min → about 4 min** per booklet |
 | **6. GitHub** | Code pushed to https://github.com/manoj101918/evalassist, with a check that no secret keys went up | CI passes ✅ |
 | **7. Dataset and baseline** | All 50 real booklets downloaded and read with Azure; first measurement of AI accuracy against real teacher marks | Found 3 important problems (section 11) |
+| **8. Fix 1: MCQ grid reader** | MCQs are read from **where each word sits on the page**; empty cells are re-read by the vision model | MCQ reading **45% → 89%** on the test students |
 
-**Where we are now:** finishing Phase 0. The baseline report has 5 of its 10 test booklets done;
-Groq's free daily limit stopped it, and it continues automatically from where it stopped. Next
-come the three fixes from the baseline (section 13), then Phase 1 (the LangGraph agent).
+**Where we are now:** finishing Phase 0. Fix 1 (MCQs) is done. The baseline report has 5 of its
+10 test booklets done; Groq's free daily limit stopped it, and it continues automatically from
+where it stopped. Next come fix 2 (harsh grading) and fix 3 (trustworthy green), then Phase 1
+(the LangGraph agent).
 
 ---
 
@@ -178,7 +180,7 @@ Coordinator: watch progress → Export to Excel
 | **RapidFuzz** | Finds nearly matching text | Checks the AI's quoted evidence exists; matches written-out MCQ options |
 | **openpyxl** | Creates Excel files | The marks export |
 | **PyJWT** | Verifies login tokens | Confirms who is making each request |
-| **pytest** | Testing tool | Runs the **68 automatic tests** |
+| **pytest** | Testing tool | Runs the **78 automatic tests** |
 | **ruff** | Code quality checker ("linter") | Finds bugs and messy code automatically |
 
 ### 5.3 Cloud services and the AI models
@@ -237,12 +239,36 @@ PDF ─► 1. page images ─► 2. skip blank pages ─► 3. READ pages (Azure
 
    | Tier | Used for | How | AI calls |
    |---|---|---|---|
-   | **1. Rules** ✅ built | MCQs | Find the letter the student chose ("B", "(b)", "Ans: C", or the option written out in words) and compare it with the correct option | **0** |
+   | **1. Rules** ✅ built | MCQs | Find the letter the student chose (see "How MCQs are read" below) and compare it with the correct option | **0** (rarely 1 for a re-read) |
    | **2. Own small model** ⏳ Phase 2 | Easy short answers | A model we train ourselves | 0 |
    | **3. AI grading** ✅ built (agent in Phase 1) | Written answers | A grader marks each rubric point (full / partial / absent, with a quote as evidence); a **second, independent checker** grades it again | 2 per answer |
 
-   For MCQs, OCR sometimes reads a curly handwritten "D" as the digit "0". Such look-alikes are
-   accepted but coloured **yellow**, so the teacher confirms them.
+   **How MCQs are read** (`ai/mcq_grid.py`). Most students write MCQ answers as a grid: a
+   column of question numbers with a letter beside each ("1, A" / "2, D" / …). OCR reads such a
+   grid column by column, so the text comes out as all the numbers and then all the letters.
+   Instead, we use **where each word is on the page**:
+
+   1. **Pair by row.** Each question number is paired with the letter on the same row to its
+      right. A page counts as an MCQ grid only with at least 3 pairs, so a list in a written
+      answer ("1. A random forest…") is never mistaken for MCQ answers.
+   2. **Handle OCR quirks** found in the real booklets:
+      - "7)" read as "71";
+      - "4/." read as "41." or "5%.";
+      - "1.0" with a curly D read as zero;
+      - "D. All of the mentioned", where the letter is followed by the option text.
+   3. **Infer missing numbers.** If a number was unreadable but its letter is in the answer
+      column between Q8 and Q10, it must be Q9. These answers are flagged **yellow**.
+   4. **Re-read empty cells.** If a number has no letter beside it (Azure skipped a strange
+      "D"), that small piece of the page is cropped and the vision model is asked "which
+      letter?". These answers are also **yellow**.
+
+      If the re-read fails (for example because the quota is used up), the cell is just left
+      for the teacher; the booklet doesn't fail.
+   5. **Fallback.** Anything not found this way falls back to the text split (step 4).
+
+   **Yellow rule:** look-alikes (a "0" read for "D"), letters read with low OCR confidence,
+   inferred numbers and re-reads are all **yellow**, so the teacher confirms them. Answers read
+   cleanly from the grid are green, and those are 98.7% correct.
 6. **Verify evidence.** Every quote the AI gives as evidence is searched for in the answer, with
    fuzzy matching so small spelling differences are allowed. A quote that can't be found means
    the AI may have made something up.
@@ -287,6 +313,7 @@ ai_evaluation_system/
 │   │   └── ai/
 │   │       ├── ocr_azure.py    ← Azure page reading + noise cleaning + rate-limit waits
 │   │       ├── rules.py        ← tier 1: MCQ grading without AI
+│   │       ├── mcq_grid.py     ← reads MCQ grids from word positions on the page
 │   │       ├── client.py       ← talks to Groq: JSON replies, rate-limit waits, cost tracking
 │   │       ├── prompts.py      ← instructions given to the AI
 │   │       ├── schemas.py      ← exact shape of each AI reply
@@ -302,7 +329,7 @@ ai_evaluation_system/
 │   │   ├── cache/              ← saved page readings and results (not in git)
 │   │   └── reports/            ← evaluation reports, e.g. baseline.md
 │   ├── scripts/                ← seed.py (first college + admin), run_pipeline.py (one PDF)
-│   └── tests/                  ← 68 automatic tests
+│   └── tests/                  ← 78 automatic tests
 │
 ├── frontend/src/
 │   ├── lib/ (api.ts, auth.tsx, supabase.ts, types.ts)
@@ -407,6 +434,8 @@ can't leak):
 | 16 | **Azure free-tier rate limit** | While reading the 50 booklets, Azure said "too many requests"; 2 pages silently fell back to the slow Groq reader | At most 2 pages at a time, slower status checks, and **wait and retry**; the 2 affected booklets were re-read. New test added |
 | 17 | Noisy logs | The Azure library logged every web request; a harmless "Event loop is closed" error at the end of each run | Azure logging silenced; the Groq connection is now closed properly; Groq waits are now logged |
 | 18 | Public keys in templates | The `.env.example` files had the real project URL and public key | Replaced with placeholders before pushing to GitHub |
+| 19 | **MCQs read only 45% of the time** | OCR reads MCQ grids column by column, so numbers and letters come out separated | **MCQ grid reader**: pair by position on the page, handle OCR quirks, infer missing numbers, re-read empty cells → **89%** on the test students |
+| 20 | A failed re-read failed the whole booklet | While measuring, the vision model's quota ran out mid-booklet | A re-read is optional: if it fails, that one cell is left for the teacher |
 
 ---
 
@@ -430,7 +459,7 @@ can't leak):
 | Exact match | 46.7% | |
 | AI average vs teacher average | **0.65 vs 1.17** (out of 2) | **The AI is much harsher than the teacher** |
 | Green share / green precision | 71% / **36%** | **Green can't be trusted yet** |
-| MCQ read correctly | **45%** | **Something is wrong with MCQ reading** |
+| MCQ read correctly | **45%** | **Something is wrong with MCQ reading** (now fixed: 89%, see below) |
 | Per booklet | about 16 s reading + about 4.8 min grading, about 24 AI calls, about $0.016 | |
 
 ### What the baseline taught us (this is why we measure)
@@ -449,11 +478,25 @@ can't leak):
    same harshness, so their agreement doesn't make them right. Answers containing `[illegible]`
    words could also still be green.
 
+### Fix 1 result: MCQ reading (compared with the options the teacher recorded)
+
+| Students | Before | Word positions only | + inferred numbers + re-reads |
+|---|---|---|---|
+| test (10) | 45% | 80% | **89%** |
+| validation (10) | – | 90% | **92%** |
+| train (30) | – | 75% | **81%** |
+
+- Green MCQs (read cleanly from the grid) are **98.7% correct**. Everything less certain is
+  yellow.
+- The re-read recovered about 4 of every 5 empty cells it ran on.
+- Note: the rules were developed by looking at train/validation students and one test student
+  (Student_5, where the problem was found). The test number may be slightly optimistic.
+
 ### Automatic tests
-**68 tests pass** (`cd backend && .venv\Scripts\python -m pytest`). They cover:
+**78 tests pass** (`cd backend && .venv\Scripts\python -m pytest`). They cover:
 - the colour rules and evidence matching;
 - the pipeline, using a fake AI;
-- MCQ rules and OCR cleaning;
+- MCQ rules, the MCQ grid reader (every layout we found) and OCR cleaning;
 - Azure fallback and rate-limit retry;
 - the Excel file, PDFs and blank pages;
 - employee-ID rules and assignment;
@@ -489,8 +532,7 @@ GitHub runs them automatically on every push.
 ### Right now: finish Phase 0
 1. Finish the baseline: rerun `python -m evals.run_eval --split test --name baseline` after Groq's
    daily limit resets.
-2. **Fix 1: MCQ grid reader.** Pair numbers and letters by their position on the page; re-read
-   empty cells with the vision model and flag them yellow.
+2. ✅ **Fix 1: MCQ grid reader.** Done: 45% → 89% on the test students (section 11).
 3. **Fix 2: calibrate grading.** Treat rubric items as *examples* rather than a closed list, and
    give partial credit for relevant attempts. Tune this on the **validation** students only.
 4. **Fix 3: stricter green.** `[illegible]` in the answer means yellow. Tune until green

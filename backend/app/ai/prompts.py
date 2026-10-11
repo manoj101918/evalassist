@@ -76,6 +76,13 @@ string if absent.
 summary_reason: two or three sentences."""
 
 
+REREAD_OPTION_SYSTEM = """\
+You read one cell of a handwritten multiple-choice answer sheet. The image shows a question \
+number followed by the option letter the student chose (A, B, C, D or E). Handwritten letters \
+may be curly or crossed, e.g. a D with a bar through it. Reply with only that letter. If no \
+letter is written, or you cannot tell which it is, reply with ?."""
+
+
 def render_question(q: QuestionSpec) -> str:
     lines = [
         f"Question {q.label} (maximum {q.max_marks:g} marks):",

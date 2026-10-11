@@ -28,7 +28,8 @@ from app.ai.pipeline import grade_pages
 from app.ai.rules import chosen_option, parse_options
 from app.ai.schemas import PageTranscript
 from app.config import get_settings
-from evals.dataset import build_questions, load_truth, split
+from app.pdf import render_pages
+from evals.dataset import build_questions, load_truth, pdf_path, split
 from evals.metrics import agreement, colour_report
 from evals.transcribe_dataset import load_cached
 
@@ -42,8 +43,10 @@ async def grade_student(student: str, cached: dict, questions, settings) -> dict
     grader = Grader(settings.groq_vision_model, settings.groq_grading_model, settings.groq_check_model,
                     settings.groq_api_key, settings.max_parallel_calls)
     pages = [PageTranscript(**p) for p in cached["pages"]]
+    # Page images (rendered locally, no cost) let empty MCQ cells be re-read.
+    images = render_pages(pdf_path(student).read_bytes(), dpi=settings.render_dpi)
     started = time.time()
-    result = await grader.run(grade_pages(grader, pages, questions))
+    result = await grader.run(grade_pages(grader, pages, questions, images))
     return {
         "student": student,
         "answers": [asdict(a) for a in result.answers],
