@@ -1,0 +1,49 @@
+{
+  "name": "baseline",
+  "split": "test",
+  "date": "2026-10-10T11:00:08+00:00",
+  "models": {
+    "vision": "azure/prebuilt-read",
+    "grading": "openai/gpt-oss-120b",
+    "check": "openai/gpt-oss-120b"
+  },
+  "booklets": 5,
+  "short_answers": {
+    "n": 75,
+    "qwk": 0.427,
+    "mae": 0.62,
+    "exact_pct": 46.7,
+    "within_half_pct": 60.0,
+    "ai_mean": 0.647,
+    "teacher_mean": 1.173
+  },
+  "colours": {
+    "green": {
+      "share_pct": 70.7,
+      "exact_pct": 35.8
+    },
+    "yellow": {
+      "share_pct": 22.7,
+      "exact_pct": 82.4
+    },
+    "red": {
+      "share_pct": 6.7,
+      "exact_pct": 40.0
+    }
+  },
+  "mcq_option_read_pct": 45.0,
+  "per_booklet": {
+    "reading": {
+      "calls": 3.4,
+      "tokens": 0,
+      "cost_usd": 0.0051,
+      "seconds": 16.2
+    },
+    "grading": {
+      "calls": 24.2,
+      "tokens": 29750,
+      "cost_usd": 0.01071,
+      "seconds": 290.5
+    }
+  }
+}

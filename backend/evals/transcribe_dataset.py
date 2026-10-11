@@ -1,8 +1,9 @@
 """Read every page of every dataset booklet once and cache the transcriptions.
 
-The vision model is the slowest, rate-limited step (~1 page/minute on Groq's free tier), so we
-do it once (≈3–4 hours for 50 booklets, run it overnight) and every later evaluation reuses the
-cache. Resumable: booklets already cached are skipped. Run from backend/:
+Pages are read by the configured page reader: Azure Document Intelligence (~5 s/page, ~200
+pages for the 50 booklets, within the free 500 pages/month) or, without Azure, Groq vision
+(~1 page/minute on the free tier, so ≈3–4 hours). The cache is per reader, and every later
+evaluation reuses it. Resumable: booklets already cached are skipped. Run from backend/:
 
     python -m evals.transcribe_dataset               # all students
     python -m evals.transcribe_dataset --split test  # only the test split
@@ -39,7 +40,7 @@ async def transcribe_student(student: str, settings) -> dict:
                     settings.groq_api_key, settings.max_parallel_calls, reader=settings.make_reader())
     started = time.time()
     images = render_pages(pdf_path(student).read_bytes(), dpi=settings.render_dpi)
-    pages = await transcribe_pages(grader, images)
+    pages = await grader.run(transcribe_pages(grader, images))
     return {
         "student": student,
         "model": settings.page_reader_name(),
@@ -54,7 +55,7 @@ def main() -> None:
     ap.add_argument("--split", default="all", choices=["all", "train", "val", "test"])
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    for name in ("httpx", "groq"):
+    for name in ("httpx", "groq", "azure"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     settings = get_settings()

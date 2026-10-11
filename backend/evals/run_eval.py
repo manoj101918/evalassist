@@ -43,7 +43,7 @@ async def grade_student(student: str, cached: dict, questions, settings) -> dict
                     settings.groq_api_key, settings.max_parallel_calls)
     pages = [PageTranscript(**p) for p in cached["pages"]]
     started = time.time()
-    result = await grade_pages(grader, pages, questions)
+    result = await grader.run(grade_pages(grader, pages, questions))
     return {
         "student": student,
         "answers": [asdict(a) for a in result.answers],
@@ -142,7 +142,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    for name in ("httpx", "groq"):
+    for name in ("httpx", "groq", "azure"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     settings = get_settings()

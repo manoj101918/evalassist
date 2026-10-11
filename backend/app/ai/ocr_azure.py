@@ -8,16 +8,26 @@ and returns a confidence score and position for every word. We use the confidenc
   - measure legibility from real numbers instead of guessing,
 and keep the word positions so the review screen can highlight evidence on the page image.
 """
+import asyncio
 import io
+import re
 from dataclasses import dataclass, field
 
 from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
+from azure.core.exceptions import HttpResponseError
 
 MODEL_ID = "prebuilt-read"
 MODEL_NAME = "azure/prebuilt-read"   # name used in cost tracking and caches
 NOISE_LINE_CONFIDENCE = 0.5          # a line whose words average below this is noise
 ILLEGIBLE_WORD_CONFIDENCE = 0.25     # a single word below this becomes [illegible]
+# The free F0 tier allows only a few calls per second, and every status poll of a running
+# analysis counts as a call. So: few pages at once, slow polling, and on a 429 wait and retry
+# (rather than falling back to the much slower vision model).
+MAX_PARALLEL_PAGES = 2
+POLL_SECONDS = 2
+RATE_LIMIT_RETRIES = 6
+RETRY_AFTER_RE = re.compile(r"retry after (\d+) second", re.IGNORECASE)
 
 
 @dataclass
@@ -87,15 +97,39 @@ def _lines_from_result(result) -> list[OcrLine]:
     return lines
 
 
+def retry_after_seconds(exc: HttpResponseError, attempt: int) -> float:
+    """How long Azure asked us to wait, from the Retry-After header or the message."""
+    header = exc.response.headers.get("Retry-After") if exc.response is not None else None
+    match = RETRY_AFTER_RE.search(str(exc))
+    if header and header.isdigit():
+        return int(header) + 1.0
+    if match:
+        return int(match.group(1)) + 1.0
+    return float(2 ** (attempt + 1))
+
+
 class AzureReader:
-    def __init__(self, endpoint: str, key: str):
+    def __init__(self, endpoint: str, key: str, max_parallel: int = MAX_PARALLEL_PAGES):
         self.endpoint = endpoint
         self.key = key
+        self.semaphore = asyncio.Semaphore(max_parallel)
 
     async def read_page(self, png: bytes) -> OcrPage:
-        # azure-core retries 429/5xx/connection errors with backoff by default.
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                async with self.semaphore:
+                    result = await self._analyze(png)
+                return clean_lines(_lines_from_result(result))
+            except HttpResponseError as exc:
+                if exc.status_code != 429 or attempt == RATE_LIMIT_RETRIES:
+                    raise
+                await asyncio.sleep(retry_after_seconds(exc, attempt))
+        raise AssertionError("unreachable")
+
+    async def _analyze(self, png: bytes):
+        # azure-core also retries 5xx/connection errors with backoff by default.
         async with DocumentIntelligenceClient(self.endpoint, AzureKeyCredential(self.key)) as client:
             poller = await client.begin_analyze_document(
-                MODEL_ID, io.BytesIO(png), content_type="application/octet-stream")
-            result = await poller.result()
-        return clean_lines(_lines_from_result(result))
+                MODEL_ID, io.BytesIO(png), content_type="application/octet-stream",
+                polling_interval=POLL_SECONDS)
+            return await poller.result()

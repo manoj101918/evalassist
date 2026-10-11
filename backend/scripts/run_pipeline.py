@@ -59,7 +59,7 @@ def main() -> None:
               f"{u.output_tokens:>5} out  ${u.cost_usd:.5f}", flush=True)
 
     grader = Grader(vision, grading, check, s.groq_api_key, s.max_parallel_calls, progress, reader=reader)
-    result = asyncio.run(grade_script(grader, images, questions))
+    result = asyncio.run(grader.run(grade_script(grader, images, questions)))
 
     print("\nPages:")
     for i, p in enumerate(result.pages, start=1):

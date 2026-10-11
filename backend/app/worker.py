@@ -50,7 +50,7 @@ def process_script(script: dict) -> None:
     grader = Grader(settings.groq_vision_model, settings.groq_grading_model, settings.groq_check_model,
                     settings.groq_api_key, settings.max_parallel_calls, progress,
                     reader=settings.make_reader())
-    result = asyncio.run(grade_script(grader, images, questions))
+    result = asyncio.run(grader.run(grade_script(grader, images, questions)))
 
     def save() -> None:
         # Replace any output of a previous (failed) attempt.
@@ -102,6 +102,7 @@ def main() -> None:
     # One line per poll / per SDK retry drowns the log.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("groq").setLevel(logging.WARNING)
+    logging.getLogger("azure").setLevel(logging.WARNING)
     s = get_settings()
     poll = s.worker_poll_seconds
     log.info("worker started; page reader=%s (fallback %s) grading=%s check=%s",

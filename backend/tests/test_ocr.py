@@ -81,3 +81,34 @@ def test_falls_back_to_vision_model_when_azure_fails():
     (page,) = asyncio.run(transcribe_pages(g, [_page_png()]))
     assert page.text == "21. read by the vision model"
     assert g.vision_calls == 1
+
+
+def test_rate_limited_azure_waits_and_retries_instead_of_falling_back(monkeypatch):
+    from azure.core.exceptions import HttpResponseError
+
+    from app.ai import ocr_azure
+
+    def rate_limited():
+        exc = HttpResponseError(message="exceeded call rate limit ... Please retry after 6 seconds.")
+        exc.status_code = 429
+        return exc
+
+    calls, waits = [], []
+
+    async def fake_analyze(self, png):
+        calls.append(png)
+        if len(calls) < 3:
+            raise rate_limited()
+        return object()
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(ocr_azure.AzureReader, "_analyze", fake_analyze)
+    monkeypatch.setattr(ocr_azure, "_lines_from_result", lambda result: [
+        OcrLine([OcrWord("21.", 0.99, []), OcrWord("Supervised", 0.95, [])])])
+    monkeypatch.setattr(ocr_azure.asyncio, "sleep", fake_sleep)
+
+    page = asyncio.run(ocr_azure.AzureReader("https://x", "k").read_page(b"png"))
+    assert page.text == "21. Supervised"
+    assert len(calls) == 3 and waits == [7.0, 7.0]

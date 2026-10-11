@@ -4,6 +4,7 @@ import asyncio
 import base64
 import copy
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from app.config import estimate_cost
 
 T = TypeVar("T", bound=BaseModel)
+log = logging.getLogger("ai")
 
 
 class AIError(RuntimeError):
@@ -132,6 +134,14 @@ class Grader:
         self.tracker = UsageTracker()
         self.on_usage = on_usage
 
+    async def run(self, coro: Any) -> Any:
+        """Await `coro`, then close the HTTP client while the event loop is still running
+        (otherwise asyncio.run() ends with an "Event loop is closed" traceback)."""
+        try:
+            return await coro
+        finally:
+            await self.client.close()
+
     async def _create(self, step: str, **kwargs: Any) -> Any:
         """Call Groq, waiting out per-minute rate limits (common on the free tier)."""
         for _ in range(MAX_RATE_LIMIT_WAITS):
@@ -160,6 +170,7 @@ class Grader:
                     raise AIError(f"{step}: Groq API error {exc.status_code}: {exc.message}") from exc
                 except groq.APIConnectionError as exc:
                     raise AIError(f"{step}: could not reach Groq API") from exc
+            log.info("%s: Groq rate limit, waiting %.0fs", step, wait)
             await asyncio.sleep(wait)
         raise AIError(f"{step}: still rate limited after {MAX_RATE_LIMIT_WAITS} waits")
 
